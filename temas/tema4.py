@@ -2,9 +2,15 @@
 import telebot
 from telebot import types
 from dotenv import load_dotenv
+import logging
 
 load_dotenv()
 TOKEN = os.getenv("TOKEN") or ""
+
+def parse_ints_from_text(text:str) -> list[int]:
+    text = text.replace(",", " ")
+    tokens = [t for t in text.split() if not t.startswith("/")]
+    return [int(t) for t in tokens if t.strip().lstrip("-").isdigit()]
 
 if not TOKEN:
     raise RuntimeError("there isn't TOKEN in .env")
@@ -56,6 +62,37 @@ def on_sum_numbers(m):
 def hide_kb(message):
     rm = types.ReplyKeyboardRemove()
     bot.send_message(message.chat.id,"Спрятал клавиатуру." , reply_markup=rm )
+
+
+@bot.message_handler(commands=['confirm'])
+def confirm_cmd(m):
+    kb = types.InlineKeyboardMarkup()
+    kb.add(
+        types.InlineKeyboardButton("Да" , callback_data="confirm: yes"),
+        types.InlineKeyboardButton("Нет" , callback_data="confirm: no"),
+    
+    )
+    bot.send_message(m.chat.id, "Подтвердить действие?", reply_markup=kb)
+
+
+@bot.callback_query_handler(func=lambda c: c.data.startswith("confirm:"))
+def on_confirm(c):
+    choice = c.data.split(":",1)[1]
+    bot.answer_callback_query(c.id, "Принято")
+    bot.edit_message_reply_markup(c.message.chat.id, c.message.message_id, reply_markup=None)
+    bot.send_message(c.message.chat.id, "Готово!!" if choice == "yes" else "Отменено.")
+
+logging.basicConfig(
+    level=logging.INFO,
+    format= "%(asctime)s - %(levelname)s - %(message)s"
+)
+
+@bot.message_handler(commands=['sum'])
+def cmd_sum(m):
+    logging.info(f"/sum от {m.from_user.first_name} {m.from_user.id}: {m.text}")
+    nums = parse_ints_from_text(m.text)
+    logging.info(f"распознаны числа: {nums}")
+    bot.reply_to(m,f"Сумма: {sum(nums)}" if nums else "Пример: /sum 2 3 10")
 
 
 
