@@ -1,0 +1,6 @@
+{
+    "python.analysis.autoImportCompletions": false,
+    "cSpell.words": [
+        "telebot"
+    ]
+}
