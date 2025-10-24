@@ -5,16 +5,10 @@ from dotenv import load_dotenv
 import logging
 from db import *
 
-
 load_dotenv()
 TOKEN = os.getenv("TOKEN") or ""
 
-init_db()
-
-def parse_ints_from_text(text:str) -> list[int]:
-    text = text.replace(",", " ")
-    tokens = [t for t in text.split() if not t.startswith("/")]
-    return [int(t) for t in tokens if t.strip().lstrip("-").isdigit()]
+init_db() 
 
 if not TOKEN:
     raise RuntimeError("there isn't TOKEN in .env")
@@ -30,16 +24,13 @@ def setup_bot_commands():
         types.BotCommand("note_find","find"),
         types.BotCommand("note_edit","edit"),
         types.BotCommand("note_de","delete"), 
+        types.BotCommand("model","модели"),
+        types.BotCommand("models","модели"),
+
     ]
 
     bot.set_my_commands(commands)
 
-
-""" def make_main_kb()->types.ReplyKeyboardMarkup:
-    kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
-    kb.row("О боте" , "Сумма")
-    kb.row("/help")
-    return kb """
 
 @bot.message_handler(commands=['start' , 'help'])
 def start_help(message):
@@ -137,9 +128,54 @@ def delete(message):
         bot.send_message(message.chat.id, "Не удалось удалить заметку")
 
 
-if __name__ == "__main__":
- # infinity_polling 4 1>B 15A:>=5G=> >?@0H8205B A5@25@K Telegram =0 =>2K5 A>>1I5=8O
- # skip_pending=True 4 ?@>?CAB8BL «AB0@K5» A>>1I5=8O, =0:>?;5==K5 ?>:0 1>B 1K; 2K:;NG5=
- setup_bot_commands()
- bot.infinity_polling(skip_pending=True)
 
+@bot.message_handler(commands=["models"])
+def cmd_models(message: types.Message) -> None:
+    items = list_models()
+    if not items:
+        bot.reply_to(message, "Список моделей пуст.")
+        return
+    lines = ["Доступные модели:"]
+    for m in items:
+        star = "★" if m["active"] else " "
+        lines.append(f"{star} {m['id']}. {m['label']}  [{m['key']}]")
+    lines.append("\nАктивировать: /model <ID>")
+    bot.reply_to(message, "\n".join(lines))
+
+
+@bot.message_handler(commands=['model'])
+def cmd_model(message: types.Message)->None:
+    arg = message.text.replace("/model" , "" , 1).strip()
+    if not arg:
+        active = get_active_model()
+        bot.reply_to(message , f"Текущая активная моедль: {active['label']} [{active['key']}]\n(сменить: /model <ID> или /models)")
+        return
+    if not arg.isdigit():
+        bot.reply_to(message, "Использование: /model <ID из /models>")
+        return
+    try:
+        active = set_active_model(int(arg))
+        bot.reply_to(message, f"Активная модель переключена: {active['label']} [{active["key"]}]")
+    except ValueError:
+        bot.reply_to(message, "Неизвестный ID модели. Сначала /models.")
+
+
+@bot.message_handler(commands=['start','help'])
+def cmd_start(message: types.Message)-> None:
+    """
+    
+    """
+    text = (
+        "привет! это заметочник на SQLite. \n\n"
+        "команда: \n"
+        "/note_add <текст>\n"
+        "/note_list [N]\n"
+        "/note_find <подстрока>\n"
+        "/note_edit <id> <текст>\n"
+        "/note_del <id>\n"
+        "/note_count\n"
+        "/note_export\n"
+        "note_stats [days]\n"
+        "/models\n"
+        "/model <id>\n"
+    )
