@@ -4,6 +4,8 @@ from telebot import types
 from dotenv import load_dotenv
 import logging
 from db import *
+import random
+from db import (get_character_by_id)
 
 load_dotenv()
 TOKEN = os.getenv("TOKEN") or ""
@@ -26,6 +28,7 @@ def setup_bot_commands():
         types.BotCommand("note_de","delete"), 
         types.BotCommand("model","модели"),
         types.BotCommand("models","модели"),
+        
 
     ]
 
@@ -179,3 +182,86 @@ def cmd_start(message: types.Message)-> None:
         "/models\n"
         "/model <id>\n"
     )
+
+
+@bot.message_handler(commands=['characters'])
+def cmd_characters(message: types.Message)->None:
+    user_id = message.from_user.id
+    items = list_characters()
+    if not items:
+        bot.reply_to(message, "Каталог песонажей пуст")
+        return
+    try:
+        current = get_user_character(user_id)["id"]
+    except Exception:
+        current = None
+    lines = ['доступные персонажи:']
+    for p in items:
+        star = "*" if current is not None and p["id"] == current else " "
+        lines.append(f"{star} {p['id']}. {p['name']}" )
+    lines.apped("\nвыбор: /character <ID>")
+    bot.reply_to(message, "\n".join(lines))
+
+
+@bot.message_handler(commands=["character"])
+def cmd_character(message: types.Message)-> None:
+    user_id = message.from_user.id
+    arg = message.text.replace("/character", "", 1).strip()
+    if not arg:
+        p = get_user_character(user_id)
+        bot.reply_to(message, f"текущий персонаж: {p['name']}\n(сменить: /character, затем /character <ID>)")
+        return
+    if not arg.isdigit():
+        bot.reply_to(message, "Испльзование: /character <ID из /characters>")
+        return
+    try:
+        p = set_user_character(user_id, int(arg))
+        bot.reply_to(message, f"Персонаж установлен: {p['name']}")
+    except ValueError:
+        bot.reply_to(message, "Неисвестный ID персонажа. Сначала /characters.")
+
+
+@bot.message_handler(commands=['whoami'])
+def cmd_whoami(message:types.Message)->None:
+    characters = get_user_character(message.from_user.id)
+    model = get_active_model()
+    bot.reply_to(message,)
+
+@bot.message_handler(commands=['ask_random'])
+def cmd_ask_random(message: types.Message)->None:
+    q = message.text.replace("/ask_reandom", "", 1).strip()
+    if not q:
+        bot.reply_to(message, "Использование: /ask_random <вопрос>")
+        return
+    q = q[:600]
+    items = list_characters()
+    if not items:
+        bot.reply_to(message, "Каталог персонажей пуст")
+        return
+    chosen = random.choice(items)
+    character = get_character_by_id(chosen['id'])
+    msgs = _build_messages_for_character(character, q)
+    model_key = get_active_model()['key']
+    try:
+        text, ms = chat_once(msgs, model = model_key , temperature = 0.2 , max_tokens = 400)
+        out = (text or "").strip()[:4000]
+        bot.reply_to(message, f"{out}")
+
+
+@bot.message_handler(commands=['start', 'help'])
+def cmd_start(message: types.Message)-> None:
+    text = (
+        "Привет! это заметочник на SQLite.\n\n"
+        "Команда: \n"
+        "/  \n"
+        "/  \n"
+        "/  \n"
+        "/  \n"
+        "/  \n"
+        "/  \n"
+
+
+        
+    )
+
+
