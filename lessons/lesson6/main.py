@@ -28,17 +28,17 @@ def setup_bot_commands():
         types.BotCommand("note_de","delete"), 
         types.BotCommand("model","модели"),
         types.BotCommand("models","модели"),
-        
+
 
     ]
 
     bot.set_my_commands(commands)
 
-
+""" 
 @bot.message_handler(commands=['start' , 'help'])
 def start_help(message):
     welcome_text = "Привет!!, я учебный бот который сохраняет список"
-    bot.reply_to(message,welcome_text)
+    bot.reply_to(message,welcome_text) """
 
 
 @bot.message_handler(commands=['note_add'])
@@ -222,46 +222,66 @@ def cmd_character(message: types.Message)-> None:
 
 
 @bot.message_handler(commands=['whoami'])
-def cmd_whoami(message:types.Message)->None:
-    characters = get_user_character(message.from_user.id)
+def send_cmd_whoami(message: telebot.types.Message):
+    character = get_user_character(message.from_user.id)
     model = get_active_model()
-    bot.reply_to(message,)
+
+    bot.reply_to(message,f'Модель: {model["label"]} [{model["key"]}]\nПерсонаж: {character["name"]}')
+    #logger.info(f'Sent whoami for {message.from_user.id} ({message.from_user.first_name}).')
+
+def _build_messages(user_id: int, text: str, character: dict | None = None) -> List[dict[str, str]]:
+    if character  is None:
+        character = get_user_character(user_id)
+
+    system = (
+        f'Ты отвечаешь строго в образе персонажа: {character["name"]}.\n'
+        f'{character["prompt"]}\n'
+        'Правила:\n'
+        '1. Всегда держи стиль и манеру речи выбранного персонажа. При необходимости - переформулируй.\n'
+        '2. Технические ответы давай корректно и по пунктам, но в характерной манере.\n'
+        '3. Не раскрывай, что ты "играешь роль".\n'
+        '4. Не используй длинные дословные цитаты из фильмов/книг (>10 слов).\n'
+        'Если стиль персонажа выражен слабо - переформулируй ответ и усиль характер персонажа, сохраняя фактическую точность.\n'
+    )
+
+    return [
+        {'role': 'system', 'content': system},
+        {'role': 'user', 'content': text}
+    ]
+
+
+
 
 @bot.message_handler(commands=['ask_random'])
-def cmd_ask_random(message: types.Message)->None:
-    q = message.text.replace("/ask_reandom", "", 1).strip()
-    if not q:
-        bot.reply_to(message, "Использование: /ask_random <вопрос>")
-        return
-    q = q[:600]
-    items = list_characters()
-    if not items:
-        bot.reply_to(message, "Каталог персонажей пуст")
-        return
-    chosen = random.choice(items)
-    character = get_character_by_id(chosen['id'])
-    msgs = _build_messages_for_character(character, q)
-    model_key = get_active_model()['key']
-    try:
-        text, ms = chat_once(msgs, model = model_key , temperature = 0.2 , max_tokens = 400)
-        out = (text or "").strip()[:4000]
-        bot.reply_to(message, f"{out}")
+def send_cmd_ask_random(message: telebot.types.Message):
+    token = message.text.replace('/ask_random', '').strip()
+    characters = list_characters()
 
+    if not token:
+        text = 'Отсутствует текст вопроса. Пример использования:\n /ask Вопрос'
 
-@bot.message_handler(commands=['start', 'help'])
-def cmd_start(message: types.Message)-> None:
-    text = (
-        "Привет! это заметочник на SQLite.\n\n"
-        "Команда: \n"
-        "/  \n"
-        "/  \n"
-        "/  \n"
-        "/  \n"
-        "/  \n"
-        "/  \n"
+    elif not characters:
+        text = 'Каталог персонажей пуст'
 
+    else:
+        chosen = random.choice(characters)
+        character = get_character_by_id(chosen['id'])
 
-        
-    )
+        llm_message = _build_messages(message.from_user.id, token, character)
+        model_key = get_active_model()['key']
+
+        try:
+            text, ms = chat_once(llm_message, model=model_key, temperature=0.2, max_tokens=400)
+            text = text.strip()[:4096]
+
+        except OpenRouterError as e:
+            text = f'Ошибка: {e}'
+
+        except Exception as e:
+            text = 'Непредвиденная ошибка'
+            #logger.error(e)
+
+    bot.reply_to(message, text)
+    #logger.info(f'Sent random ask for {message.from_user.id} ({message.from_user.first_name}).')
 
 
