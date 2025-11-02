@@ -143,6 +143,15 @@ def get_active_model() -> dict:
         conn.execute("UPDATE models SET active=CASE WHEN id=? THEN 1 ELSE 0 END", (row["id"],))
         return {"id": row["id"], "key": row["key"], "label": row["label"], "active": True}
 
+def get_model_key_by_ID(id:int)->dict:
+    with _connect() as conn:
+        row = conn.execute("SELECT key FROM models WHERE id =?", (id,)).fetchone()
+        if row:
+            return {"key": row["key"]}
+        if not row:
+            raise RuntimeError("id неправильный")
+        return None
+
 
 def set_active_model(model_id: int) -> dict:
     with _connect() as conn:
@@ -151,7 +160,10 @@ def set_active_model(model_id: int) -> dict:
         if not exists:
             conn.rollback()
             raise ValueError("Неизвестный ID модели")
-        conn.execute("UPDATE models SET active=CASE WHEN id=? THEN 1 ELSE 0 END", (model_id,))
+        
+        # Asegúrate de primero desactivar todos los activos
+        conn.execute("UPDATE models SET active=0")
+        conn.execute("UPDATE models SET active=1 WHERE id=?", (model_id,))
         conn.commit()
     return get_active_model()
 
@@ -210,27 +222,6 @@ def get_user_character(user_id: int) -> dict:
 def get_character_prompt_for_user(user_id: int)-> str:
     return get_user_character(user_id)["prompt"]
 
-
-def _build_messages(user_id: int , user_text:str)->list[dict:]:
-    p = get_user_character(user_id)
-    system = (
-        f"ты отвечаешь строго в образе персонажа: {p['name']}.\n"
-    )
-
-
-def _build_messages_for_character(character: dict, user_text: str) -> list[dict]:
-    system = (
-        f"ты отвечаешь строго в образе персонажа {character['name']}. \n"
-        f""
-    )
-
-    return [
-        {"role" : "system" , "content":system},
-        {"role" : "user" , "content":user_text}
-    ]
-
-def _build_messages_for_character(character, q):
-    return 0
 
 
 

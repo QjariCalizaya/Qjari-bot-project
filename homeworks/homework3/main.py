@@ -173,5 +173,5 @@ def check_activity(message):
 
 
 if __name__ == "__main__":
- setup_bot_commands()
- bot.infinity_polling(skip_pending=True)
+    setup_bot_commands()
+    bot.infinity_polling(skip_pending=True)

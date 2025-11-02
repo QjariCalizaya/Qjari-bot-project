@@ -2,10 +2,13 @@
 import telebot
 from telebot import types
 from dotenv import load_dotenv
+from typing import List, Literal
 import logging
 from db import *
 import random
 from db import (get_character_by_id)
+from openrouter_client import *
+from config import logger
 
 load_dotenv()
 TOKEN = os.getenv("TOKEN") or ""
@@ -20,14 +23,27 @@ bot = telebot.TeleBot(TOKEN)
 
 def setup_bot_commands():
     commands = [
-        types.BotCommand("start","Запуск"),
-        types.BotCommand("note_add","add"),
-        types.BotCommand("note_list","show"),
-        types.BotCommand("note_find","find"),
-        types.BotCommand("note_edit","edit"),
-        types.BotCommand("note_de","delete"), 
-        types.BotCommand("model","модели"),
-        types.BotCommand("models","модели"),
+            telebot.types.BotCommand(command='start', description='Start bot'),
+            telebot.types.BotCommand(command='help', description='Help message'),
+            telebot.types.BotCommand(command='about', description='About the bot'),
+            #telebot.types.BotCommand(command='sum', description='Summation of digits'),
+            telebot.types.BotCommand(command='confirm', description='Confirm action'),
+            #telebot.types.BotCommand(command='weather', description='Get weather'),
+            telebot.types.BotCommand(command='add_note', description='Add note'),
+            telebot.types.BotCommand(command='list_notes', description='List of note'),
+            telebot.types.BotCommand(command='find_note', description='Search note'),
+            telebot.types.BotCommand(command='edit_note', description='Edit note'),
+            telebot.types.BotCommand(command='delete_note', description='Delete note'),
+            telebot.types.BotCommand(command='count_notes', description='Count of note'),
+            telebot.types.BotCommand(command='model', description='Set active model'),
+            telebot.types.BotCommand(command='models', description='Get list of AI models'),
+            telebot.types.BotCommand(command='ask', description='Ask the model a question'),
+            telebot.types.BotCommand(command='ask_model', description='Ask a question a specific model'),
+            telebot.types.BotCommand(command='ask_random', description='Ask the random character'),
+            telebot.types.BotCommand(command='characters', description='Get list of characters'),
+            telebot.types.BotCommand(command='character', description='Get active character or set new character'),
+            telebot.types.BotCommand(command='character_name', description='Change character name'),
+            telebot.types.BotCommand(command='whoami', description='Get active model and active character')
 
 
     ]
@@ -40,6 +56,25 @@ def start_help(message):
     welcome_text = "Привет!!, я учебный бот который сохраняет список"
     bot.reply_to(message,welcome_text) """
 
+@bot.message_handler(commands=['start','help'])
+def cmd_start(message: types.Message)-> None:
+    """
+    
+    """
+    text = (
+        "привет! это заметочник на SQLite. \n\n"
+        "команда: \n"
+        "/note_add <текст>\n"
+        "/note_list [N]\n"
+        "/note_find <подстрока>\n"
+        "/note_edit <id> <текст>\n"
+        "/note_del <id>\n"
+        "/note_count\n"
+        "/note_export\n"
+        "note_stats [days]\n"
+        "/models\n"
+        "/model <id>\n"
+    )
 
 @bot.message_handler(commands=['note_add'])
 def note_add(message):
@@ -162,26 +197,29 @@ def cmd_model(message: types.Message)->None:
     except ValueError:
         bot.reply_to(message, "Неизвестный ID модели. Сначала /models.")
 
+@bot.message_handler(commands=['ask'])
+def send_cmd_ask(message: telebot.types.Message):
+    token = message.text.replace('/ask', '').strip()
 
-@bot.message_handler(commands=['start','help'])
-def cmd_start(message: types.Message)-> None:
-    """
-    
-    """
-    text = (
-        "привет! это заметочник на SQLite. \n\n"
-        "команда: \n"
-        "/note_add <текст>\n"
-        "/note_list [N]\n"
-        "/note_find <подстрока>\n"
-        "/note_edit <id> <текст>\n"
-        "/note_del <id>\n"
-        "/note_count\n"
-        "/note_export\n"
-        "note_stats [days]\n"
-        "/models\n"
-        "/model <id>\n"
-    )
+    if not token:
+        text = 'Отсутствует текст вопроса. Пример использования:\n /ask Вопрос'
+
+    else:
+        llm_message = _build_messages(message.from_user.id, token[:600])
+        model_key = get_active_model()['key']
+
+        try:
+            text, ms = chat_once(llm_message, model=model_key, temperature=0.2, max_tokens=400)
+            text = text.strip()[:4096]
+
+        except OpenRouterError as e: 
+            text = f'Ошибка test: {e}'
+
+        except Exception as e:
+            text = 'Непредвиденная ошибка'
+            logger.error(e)
+
+    bot.reply_to(message, text)
 
 
 @bot.message_handler(commands=['characters'])
@@ -199,7 +237,7 @@ def cmd_characters(message: types.Message)->None:
     for p in items:
         star = "*" if current is not None and p["id"] == current else " "
         lines.append(f"{star} {p['id']}. {p['name']}" )
-    lines.apped("\nвыбор: /character <ID>")
+    lines.append("\nвыбор: /character <ID>")
     bot.reply_to(message, "\n".join(lines))
 
 
@@ -249,39 +287,89 @@ def _build_messages(user_id: int, text: str, character: dict | None = None) -> L
         {'role': 'user', 'content': text}
     ]
 
+def _build_message_for_character(character: dict, user_text: str)->list[dict]:
+    system = (
 
+        f"Ты отвечаешь строго в образе персонажа: {character['name']}.\n"
+        f"{character['prompt']}\n"
+        "Правила:\n"
+        "1)Всегда держи стиль и нанеру речи выбранного персонажа. при необходимости - переформулируй\n"
+        "2) Технические ответы давай корекно и по пунктам, но в характерной манере.\n"
+        "3)не раскрывай, что ты 'играешь роль'.\n"
+        "4)не используй длинные дословные цитаты из фильмов/книг(>10 слов).\n"
+        "5)Если стиль персонажа выражен слабо - переформулируй ответ и усили характер персонажа, сохраняя фактическую точность\n"
+    )
+    return [
+        {"role": "system" , "content": system},
+        {"role": "user", "content": user_text}
+    ]
 
 
 @bot.message_handler(commands=['ask_random'])
-def send_cmd_ask_random(message: telebot.types.Message):
-    token = message.text.replace('/ask_random', '').strip()
-    characters = list_characters()
+def cmd_ask_random(message: types.Message)->None:
+    q = message.text.replace("/ask_random", "", 1).strip()
+    if not q:
+        bot.reply_to(message, "Использование: /ask_random<вопрос>")
+        return
+    q = q[:600]
+    items = list_characters()
+    if not items:
+        bot.reply_to(message, "каталог персонажей пуст.")
+        return
+    chosen = random.choice(items)
+    character = get_character_by_id(chosen["id"])
 
-    if not token:
-        text = 'Отсутствует текст вопроса. Пример использования:\n /ask Вопрос'
+    msgs = _build_message_for_character(character, q)
+    model_key = get_active_model()["key"]
+    try:
+        text , ms = chat_once(msgs, model=model_key, temperature=0.2 , max_tokens=400)
+        out = (text or "").strip()[:4000]
+        bot.reply_to(message, f"{out}\n\n({ms} MC; модель: {model_key}; как: {character['name']})")
+    except OpenRouterError as e:
+        bot.reply_to(message, f"ошибка: {e}")
+    except Exception:
+        bot.reply_to(message, "Непредвиденная ошибка")
 
-    elif not characters:
-        text = 'Каталог персонажей пуст'
+@bot.message_handler(commands=['ask_model'])
+def cmd_ask_model(message: types.Message)->None:
+    q = message.text.replace("/ask_model","",1).strip()
+    if not q:
+        bot.reply_to(message, "Использование: /ask_model <ID> <вопрос>")
+        return
+    q = q[:600]
+    
+    items = list_characters()
+    if not items:
+        bot.reply_to(message, "каталог персонажей пуст.")
+        return
+    parts = q.split(maxsplit=1)  # separa ID de la pregunta
+    if len(parts) < 2:
+        bot.reply_to(message, "Использование: /ask_model <ID> <вопрос>")
+        return
 
-    else:
-        chosen = random.choice(characters)
-        character = get_character_by_id(chosen['id'])
+    id_str, question = parts
+    try:
+        id = int(id_str)
+    except ValueError:
+        bot.reply_to(message, "ID должен быть числом")
+        return
+    
+    character = get_character_by_id(id)
+    if not character:
+        bot.reply_to(message, "указан неправильный ID (список character /characters)")
+        return
+    msgs = _build_message_for_character(character,question)
+    model_key = get_model_key_by_ID(id)["key"]
 
-        llm_message = _build_messages(message.from_user.id, token, character)
-        model_key = get_active_model()['key']
+    try:
+        text , ms = chat_once(msgs,model=model_key, temperature=0.2, max_tokens=400)
+        out = (text or "").strip()[:4000]
+        bot.reply_to(message , f"{out}\n\n({ms} MC; модель: {model_key}; как: {character['name']})" )
+    except OpenRouterError as e:
+        bot.reply_to(message, f"ошибка: {e}")
+    except Exception:
+        bot.reply_to(message, "Непредвиденная ошибка")
 
-        try:
-            text, ms = chat_once(llm_message, model=model_key, temperature=0.2, max_tokens=400)
-            text = text.strip()[:4096]
-
-        except OpenRouterError as e:
-            text = f'Ошибка: {e}'
-
-        except Exception as e:
-            text = 'Непредвиденная ошибка'
-            #logger.error(e)
-
-    bot.reply_to(message, text)
-    #logger.info(f'Sent random ask for {message.from_user.id} ({message.from_user.first_name}).')
-
-
+if __name__ == "__main__":
+    setup_bot_commands()
+    bot.infinity_polling(skip_pending=True)
