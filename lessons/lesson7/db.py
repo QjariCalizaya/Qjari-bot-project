@@ -1,8 +1,10 @@
 ﻿import os
 import sqlite3
 from typing import Any, Optional
-
+import config
+import logger as log
 from dotenv import load_dotenv
+from datetime import datetime
 
 load_dotenv()
 
@@ -94,10 +96,24 @@ def init_db():
     
     """
 
+    schema4 = """
+    CREATE TABLE IF NOT EXISTS settings(
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL,
+    maxNotes INTEGER NOT NULL
+
+    );
+    CREATE TABLE IF NOT EXISTS feature_toggles(
+        name TEXT PRIMARY KEY,
+        enabled INTEGER NOT NULL CHECK (enabled IN (0,1))
+    );
+    """
+
     with _connect() as conn:
         conn.executescript(schema)
         conn.executescript(schema2)
         conn.executescript(schema3)
+        conn.executescript(schema4)
 
 
 def add_note(user_id: int, text: str) -> int:
@@ -315,6 +331,103 @@ def write_error_call(
         conn.close()
     except Exception as e:
         log.error("не удалось записать запись в error_logs: %s", e, exc_info=True)
+
+def write_error_log(
+    level: str,
+    logger_name: str,
+    message: str,
+    user_id: Optional[int] = None,
+    command: Optional[str] = None,
+    details: Optional[str] = None,
+) -> None:
+    """
+    Записать одну строку в таблицу error_log.
+
+    Используем для важных ошибок:
+    - OpenRouterError (401/429/5xx),
+    - серьезные ошибки БД,
+    - падения хендлеров
+    """
+    try:
+        conn = _connect()
+        cur = conn.cursor()
+        cur.execute(
+            """
+            INSERT INTO error_log (created_at, level, logger, message, user_id, command, details)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                datetime.utcnow().isoformat(timespec="seconds"),
+                level,
+                logger_name,
+                message,
+                user_id,
+                command,
+                details,
+            ),
+        )
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        log.error("Не удалось записать ошибку в error_log: %s", e, exc_info=True)
+
+
+def get_setting_or_default(key: str, default: str)->str:
+    with _connect() as conn:
+        row = conn.execute(
+           " SELECT value FROM settings WHERE key = ?",
+           (key,),
+        ).fetchone()
+    if row is None:
+        return default
+    return row['value']
+
+def get_int_setting(key: str, default: int)-> int:
+    raw = get_setting_or_default(key,str(default))
+    try:
+        return int(raw)
+    except ValueError:
+        return default
+    
+def get_bool_setting(key: str, default: bool)->bool:
+    raw = get_setting_or_default(key, "true" if default else "false")
+    raw_low = raw.lower()
+    if raw_low in ("1", "true", "yes", "on"):
+        return True
+    if raw_low in ("0", "false" , "no", "off"):
+        return False
+    return default
+ 
+
+def is_feature_enabled(name:str, default: bool)-> bool:
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT enabled FROM feature_toggles WHERE name = ?",
+            (name,),
+        ).fetchone()
+    if row is None:
+        return default
+
+    return bool(row["enabled"])
+
+def set_settings(key: str, value: str) -> None:
+    with _connect() as conn:
+        conn.execute(
+            "INSERT INTO  settings (key, value) VALUES (?, ?)"
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (key,value),
+        )
+
+def set_feature_toggle(name:str,enabled:bool)->None:
+    with _connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO features_toggles(name,enabled)
+            VALUES(? , ?)
+            ON CONFLICT(name) DO UPDATE SET enabled = excluded.enabled
+            """,
+            (name,1 if enabled else 0),
+        )
 
 
 

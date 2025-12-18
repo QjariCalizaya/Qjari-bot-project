@@ -3,13 +3,17 @@ import random
 
 import telebot
 from telebot import types
-
-from config import logger
+from config import MAX_PROMPT_CHARS_DEFAULT ,SHOW_MODEL_FOOTER_DEFAULT, DEBUG_SETTINGS_SHOW, CMD_MODEL_ID_ENABLED
 from db import *
 from db import (get_character_by_id)
-from lessons.lesson6.metrics import metric
-from loggin_config import setup_logging
+from metrics import metric
+from logging_config import setup_logging
 from openrouter_client import *
+from db import (get_bool_setting, write_error_call, write_error_log, is_feature_enabled, set_settings, set_feature_toggle)
+from metrics import metric, timed
+from typing import Iterable
+
+
 
 load_dotenv()
 TOKEN = os.getenv("TOKEN") or ""
@@ -50,6 +54,8 @@ def setup_bot_commands():
 
 
     ]
+    if is_feature_enabled("debug_settings", DEBUG_SETTINGS_SHOW):
+        commands.append(types.BotCommand("debug_settings", "Показать настройки бота"))
 
     bot.set_my_commands(commands)
 
@@ -189,6 +195,11 @@ def cmd_models(message: types.Message) -> None:
 
 @bot.message_handler(commands=['model'])
 def cmd_model(message: types.Message)->None:
+
+    if not is_feature_enabled("model_commands",CMD_MODEL_ID_ENABLED):
+        bot.reply_to(message, "команды выбора модели временно отключены")
+        return
+
     arg = message.text.replace("/model" , "" , 1).strip()
     if not arg:
         active = get_active_model()
@@ -203,30 +214,68 @@ def cmd_model(message: types.Message)->None:
     except ValueError:
         bot.reply_to(message, "Неизвестный ID модели. Сначала /models.")
 
-@bot.message_handler(commands=['ask'])
-def send_cmd_ask(message: telebot.types.Message):
-    token = message.text.replace('/ask', '').strip()
 
-    if not token:
-        text = 'Отсутствует текст вопроса. Пример использования:\n /ask Вопрос'
 
-    else:
-        llm_message = _build_messages(message.from_user.id, token[:600])
-        model_key = get_active_model()['key']
+@bot.message_handler(commands=["ask"])
+def cmd_ask(message: types.Message) -> None:
+    """
+    Задать вопрос LLM модели
+    """
+    metric.counter("commands_total").inc()
+    metric.counter("ask_requests_total").inc()
 
-        try:
-            text, ms = chat_once(llm_message, model=model_key, temperature=0.2, max_tokens=400)
-            text = text.strip()[:4096]
+    user_id = message.from_user.id
+    q = message.text.replace("/ask", "", 1).strip()
+    if not q:
+        bot.reply_to(message, "Использование: /ask <вопрос>")
+        return
 
-        except OpenRouterError as e: 
-            text = f'Ошибка test: {e}'
+    max_len = get_int_setting("max_prompt_chars",MAX_PROMPT_CHARS_DEFAULT)
+    msgs = _build_messages(user_id, q[:max_len])
+    model_key = get_active_model()["key"]
 
-        except Exception as e:
-            text = 'Непредвиденная ошибка'
-            logger.error(e)
+    log.info("Команда /ask от user_id=%s, вопрос=%.80s", user_id, q)
 
-    bot.reply_to(message, text)
+    try:
+        text, ms = chat_once(msgs, model=model_key, temperature=0.2, max_tokens=400)
 
+    except OpenRouterError as e:
+        metric.counter("openrouter_errors_total").inc()
+
+        log.error("OpenRouterError при /ask от user_id=%s: %s", user_id, e)
+        write_error_log(
+            level="ERROR",
+            logger_name=__name__,
+            message=str(e),
+            user_id=user_id,
+            command="/ask",
+            details=None,
+        )
+        bot.reply_to(message, f"Ошибка: {e}")
+        return
+    except Exception:
+        log.exception("Непредвиденная ошибка при /ask от user_id=%s", user_id)
+        write_error_log(
+            level="ERROR",
+            logger_name=__name__,
+            message=f"Unhandled error in /ask: {e}",
+            user_id=user_id,
+            command="/ask",
+            details=None,
+        )
+        bot.reply_to(message, "Непредвиденная ошибка.")
+        return
+
+    metric.latency("openrouter_latency_ms").observe(ms)
+
+    out = (text or "").strip()[:4000]  # не переполняем сообщение Telegram
+    
+    show_footer = get_bool_setting("show_model_footer", SHOW_MODEL_FOOTER_DEFAULT)
+    add_info = f"\n\n({ms} MC: модель: {model_key})" if show_footer else ""
+    
+    bot.reply_to(message, f"{out}{add_info}")
+
+    
 
 @bot.message_handler(commands=['characters'])
 def cmd_characters(message: types.Message)->None:
@@ -405,6 +454,52 @@ def handle_stats(message: types.Message)->None:
     else:
         lines.append("no data")
     bot.reply_to(message, "\n".join(lines))
+
+
+@bot.message_handler(commands=["debug_settings"])
+def cmd_debug_settings(message):
+    max_len = get_int_setting("max_prompt_chars", MAX_PROMPT_CHARS_DEFAULT)
+    show_footer = get_bool_setting("show_model_footer", SHOW_MODEL_FOOTER_DEFAULT)
+    model_cmd = is_feature_enabled("model_commands", CMD_MODEL_ID_ENABLED)
+
+    text = (
+        f"max_prompt_chars = {max_len}\n"
+        f"show_model_footer = {show_footer}\n"
+        f"feature: model_commands = {model_cmd}\n"
+    )
+    bot.reply_to(message, text)
+
+@bot.message_handler(commands=['set_settings'])
+def cmd_set_settings(message:types.Message)-> None:
+    parts = message.text.split(maxsplit=1)
+    if len(parts) < 2 or "=" not in parts[1]:
+        bot.reply_to(message, "использование: /set_settings ключ=значение")
+        return
+    key , value = parts[1].split("=", 1)
+    key = key.strip()
+    value.value.strip()
+
+    if not key:
+        bot.reply_to(message, "ключ параметра неможет быть пустым")
+        return
+    set_settings(key, value)
+    bot.reply_to(message, f"параметр {key} установлен в {value}")
+
+
+@bot.message_handler(commands=['set_toggle'])
+def cmd_set_toggle(message: types.Message)->None:
+    parts = message.text.split(maxsplit=2)
+    if len(parts) < 3:
+        bot.reply_to(message, "использование: /set_toggle имя on|off")
+        return
+    name = parts[1].strip()
+    state = parts[2].strip().lower()
+    if state not in ("on","off"):
+        bot.reply_to(message, "Второй аргумент должен быть on или off")
+        return
+    enabled = state == "on"
+    set_feature_toggle(name,enabled)
+    bot.reply_to(message, f"Feature-toggle {name} = {enabled}")
 
 if __name__ == "__main__":
     setup_bot_commands()
